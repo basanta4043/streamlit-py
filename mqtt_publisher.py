@@ -1,15 +1,18 @@
-import streamlit as st
 import json
-import paho.mqtt.client as mqtt
-import time
-from typing import Any, Dict, Set
 import logging
 from dataclasses import dataclass
+from queue import Queue
+from threading import Thread
+
+import paho.mqtt.client as mqtt
+import streamlit as st
 
 # Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Queue to store received messages
+message_queue = Queue()
 
 @dataclass
 class MQTTConfig:
@@ -19,6 +22,7 @@ class MQTTConfig:
     qos: int = 1
 
 
+# MQTT Callbacks
 def on_connect(client, userdata, flags, rc):
     connection_codes = {
         0: "Connected successfully",
@@ -31,79 +35,84 @@ def on_connect(client, userdata, flags, rc):
     logger.info(f"Connection status: {connection_codes.get(rc, 'Unknown error')}")
 
 
-def on_publish(client, userdata: Set[int], mid: int):
-    if isinstance(userdata, set):
-        userdata.discard(mid)
-        logger.info(f"Message {mid} published successfully.")
+def on_message(client, userdata, msg):
+    logger.info(f"Received message on topic {msg.topic}: {msg.payload.decode('utf-8')}")
+    message_queue.put({
+        "topic": msg.topic,
+        "message": msg.payload.decode('utf-8')
+    })
 
 
-def publish_message(config: MQTTConfig, topic: str, message: Dict[str, Any], username: str, password: str) -> bool:
-    mqttc = mqtt.Client()
-    mqttc.username_pw_set(username, password)
-    mqttc.on_connect = on_connect
-    mqttc.on_publish = on_publish
-    unacked_publish = set()
-    mqttc.user_data_set(unacked_publish)
-
-    try:
-        mqttc.connect(config.host, port=config.port, keepalive=config.keepalive)
-        mqttc.loop_start()
-
-        start_time = time.time()
-        while not mqttc.is_connected() and (time.time() - start_time) < 5:
-            time.sleep(0.1)
-
-        if not mqttc.is_connected():
-            st.error("Failed to connect to MQTT broker.")
-            return False
-
-        msg_info = mqttc.publish(topic, json.dumps(message), qos=config.qos)
-        if not msg_info.is_published():
-            unacked_publish.add(msg_info.mid)
-
-        start_time = time.time()
-        while unacked_publish and (time.time() - start_time) < 10:
-            time.sleep(0.1)
-
-        if len(unacked_publish) == 0:
-            st.success("Message published successfully.")
-            return True
-        else:
-            st.error("Failed to publish message.")
-            return False
-
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        st.error(f"Error: {str(e)}")
-        return False
-    finally:
-        mqttc.disconnect()
-        mqttc.loop_stop()
+def on_publish(client, userdata, mid):
+    logger.info(f"Message {mid} published successfully.")
 
 
-def mqtt_publisher_ui():
-    st.title("📡 MQTT Publisher")
+def mqtt_client_ui():
+    st.title("📡 MQTT Client")
+
+    # Initialize session state
+    if "received_messages" not in st.session_state:
+        st.session_state["received_messages"] = []
 
     # MQTT Config
     host = st.text_input("MQTT Host", value="mqttuat.instantpaygateway.com")
     port = st.number_input("MQTT Port", value=1883)
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
-    topic = st.text_input("Topic", value="terminal/txn/sgr-card/sale/request")
 
-    # Message
-    payment_mode = st.selectbox("Payment Mode", ["CASH", "MNO", "PREPAID_CARD"])
-    amount = st.number_input("Amount", value=5000)
-    serial_number = st.text_input("Serial Number", value="F20MP1106001795")
-    tenant_id = st.text_input("Tenant ID", value="institution_000")
+    # Sender
+    sender_topic = st.text_input("Sender Topic", value="terminal/txn/sgr-card/sale/request")
+    message = st.text_area("Sender Message", value=json.dumps({
+        "amount": 5000,
+        "serialNumber": "F20MP1106001795",
+        "tenantId": "institution_000",
+        "paymentMode": "CASH"
+    }, indent=4))
 
-    payload = {
-        "amount": amount,
-        "serialNumber": serial_number,
-        "tenantId": tenant_id,
-        "paymentMode": payment_mode
-    }
+    # Receiver
+    receiver_topic = st.text_input("Receiver Topic", value="terminal/txn/sgr-card/sale/response")
 
+    # Connect MQTT Client
+    mqttc = mqtt.Client()
+    mqttc.username_pw_set(username, password)
+    mqttc.on_connect = on_connect
+    mqttc.on_message = on_message
+    mqttc.on_publish = on_publish
+
+    if st.button("Start MQTT Client"):
+        try:
+            mqttc.connect(host, port=int(port))
+            mqttc.loop_start()
+            mqttc.subscribe(receiver_topic)
+            st.success("MQTT Client started successfully.")
+        except Exception as e:
+            st.error(f"Error starting MQTT Client: {str(e)}")
+
+    # Periodically update received messages from the queue
+    while not message_queue.empty():
+        message = message_queue.get()
+        st.session_state["received_messages"].append(message)
+
+    # Publish Message
     if st.button("Publish Message"):
-        config = MQTTConfig(host=host, port=port)
-        publish_message(config, topic, payload, username, password)
+        try:
+            mqttc.publish(sender_topic, message)
+            st.success("Message published successfully.")
+        except Exception as e:
+            st.error(f"Error publishing message: {str(e)}")
+
+    # Display received messages
+    st.subheader("Received Messages")
+    for received in st.session_state["received_messages"]:
+        st.write(f"**Topic:** {received['topic']}")
+        st.write(f"**Message:** {received['message']}")
+        st.markdown("---")
+
+    # Stop MQTT Client
+    if st.button("Stop MQTT Client"):
+        try:
+            mqttc.disconnect()
+            mqttc.loop_stop()
+            st.success("MQTT Client stopped successfully.")
+        except Exception as e:
+            st.error(f"Error stopping MQTT Client: {str(e)}")
