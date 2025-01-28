@@ -3,3 +3,4 @@ paho-mqtt~=2.1.0
 python-dotenv~=1.0.1
 langchain-core~=0.3.32
 langchain-community~=0.3.16
+langchain_ollama~=0.2.2
