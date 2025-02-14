@@ -27,6 +27,7 @@ def password_encoder_ui():
 
     if st.button("Encode Password"):
         if plain_text:
+            if salt == "": salt = None
             encoded_password = encode(plain_text, salt)
             st.success(f"Encoded Password: `{encoded_password}`")
         else:
