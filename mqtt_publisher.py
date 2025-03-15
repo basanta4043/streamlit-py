@@ -55,7 +55,7 @@ def mqtt_client_ui():
         st.session_state["received_messages"] = []
 
     # MQTT Config
-    host = st.text_input("MQTT Host", value="mqttuat.instantpaygateway.com")
+    host = st.text_input("MQTT Host", value="localhost")
     port = st.number_input("MQTT Port", value=1883)
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
